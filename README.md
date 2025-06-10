@@ -7,3 +7,6 @@ MIRAOUI Ilyes <br>
 nasm -f elf64 socket.asm -o socket.o <br>
 ld socket.o -o socket<br>
 ./socket
+
+# Ecoute 
+nc -lvnp 4444
